@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>glass · style</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{ --ink:#3a3357; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; }
+  body{
+    overflow-x:hidden;                            /* document scrolls vertically to pan the wallpaper */
+    background:#1a2230; color:var(--ink);
+    font-family:"Space Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    user-select:none; -webkit-user-select:none;
+    cursor:none;                                   /* the glass lens is the cursor */
+    touch-action:pan-y;
+  }
+
+  /* full-width wallpaper — its natural height makes the page scrollable */
+  #bg{ display:block; width:100%; height:auto; position:relative; z-index:0; }
+  #vignette{ position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:radial-gradient(125% 105% at 50% 42%, transparent 58%, rgba(10,18,30,.28) 100%); }
+
+  /* the glass lens (follows the pointer, refracts the wallpaper behind it) */
+  #lens{ position:fixed; left:0; top:0; z-index:3; pointer-events:none;
+    background:rgba(255,255,255,.02);
+    -webkit-backdrop-filter:var(--glass); backdrop-filter:var(--glass);
+    transform:translate3d(-9999px,-9999px,0); transition:opacity .35s ease; opacity:0;
+    will-change:transform; backface-visibility:hidden; -webkit-backface-visibility:hidden; isolation:isolate; }
+  #rim{ position:absolute; inset:0; width:100%; height:100%; overflow:visible; filter:blur(1px); }
+  #rim path{ fill:none; stroke:rgba(255,255,255,.5); stroke-width:2; vector-effect:non-scaling-stroke; }
+
+  /* shape selector (top centre) */
+  #tabs{ position:fixed; z-index:5; left:50%; top:clamp(16px,4vh,30px); transform:translateX(-50%);
+    display:flex; gap:4px; padding:5px; border-radius:15px; cursor:auto;
+    background:rgba(255,255,255,.55); -webkit-backdrop-filter:blur(12px) saturate(1.3); backdrop-filter:blur(12px) saturate(1.3);
+    box-shadow: inset 0 0 0 1px rgba(120,110,175,.3), 0 12px 28px -16px rgba(90,78,140,.5); }
+  .tab{ cursor:pointer; border:0; background:transparent; color:rgba(70,63,105,.66); border-radius:11px; padding:8px 15px;
+    font:inherit; font-size:13px; font-weight:500; letter-spacing:.02em; display:flex; align-items:center; gap:7px;
+    transition:background .15s ease, color .15s ease, box-shadow .15s ease; }
+  .tab:hover{ background:rgba(255,255,255,.55); color:#3a3357; }
+  .tab[aria-selected="true"]{ background:#fff; color:#3a3357; box-shadow:0 3px 9px -4px rgba(90,78,140,.5); }
+  .tab svg{ width:15px; height:15px; }
+  .tab svg *{ stroke:currentColor; stroke-width:1.6; fill:none; }
+  .tab:focus-visible{ outline:2px solid #6f5fc0; outline-offset:2px; }
+
+  #hint{ position:fixed; z-index:4; left:50%; bottom:30px; transform:translateX(-50%);
+    font-size:13px; letter-spacing:.04em; color:rgba(255,255,255,.7); text-shadow:0 1px 10px rgba(0,0,0,.4);
+    pointer-events:none; transition:opacity .6s ease; }
+</style>
+</head>
+<body>
+  <img id="bg" src="wallpaper.jpg" alt="" decoding="async" />
+  <div id="vignette"></div>
+
+  <div id="lens"><svg id="rim" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="rimpath" d=""/></svg></div>
+
+  <nav id="tabs" role="tablist" aria-label="Glass shape">
+    <button class="tab" data-shape="circle"   role="tab" aria-selected="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>Circle</button>
+    <button class="tab" data-shape="triangle" role="tab" aria-selected="false"><svg viewBox="0 0 24 24"><path d="M12 3 L21 20 L3 20 Z"/></svg>Triangle</button>
+    <button class="tab" data-shape="rect"     role="tab" aria-selected="false"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5"/></svg>Rect</button>
+  </nav>
+  <div id="hint">move your cursor — or touch — to look through the glass</div>
+
+  <svg id="defs" width="0" height="0" aria-hidden="true" style="position:absolute"><defs></defs></svg>
+
+<script>
+(() => {
+  "use strict";
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const $ = id => document.getElementById(id);
+  const defs = document.querySelector('#defs defs');
+  const lens = $('lens'), rimpath = $('rimpath'), hint = $('hint');
+
+  /* ============================================================
+     1. Per-shape glass: an SDF drives the refraction displacement
+        map, plus matching clip-path and rim outline.
+     ============================================================ */
+  const roundRectSDF = (x,y,hx,hy,r) => {
+    const qx = Math.abs(x)-(hx-r), qy = Math.abs(y)-(hy-r);
+    return Math.hypot(Math.max(qx,0),Math.max(qy,0)) + Math.min(Math.max(qx,qy),0) - r;
+  };
+  const TRI = [[0,-0.88],[0.88,0.8],[-0.88,0.8]], TRC = [0,0.24];
+  function polySDF(x,y,V,cen){            // signed distance to a convex polygon (<0 inside)
+    let s = -1e9;
+    for(let i=0;i<V.length;i++){
+      const a=V[i], b=V[(i+1)%V.length];
+      let nx=b[1]-a[1], ny=-(b[0]-a[0]); const nl=Math.hypot(nx,ny)||1; nx/=nl; ny/=nl;
+      if((cen[0]-a[0])*nx+(cen[1]-a[1])*ny > 0){ nx=-nx; ny=-ny; }   // outward normal
+      const d=(x-a[0])*nx+(y-a[1])*ny; if(d>s) s=d;
+    }
+    return s;
+  }
+  const SHAPES = {
+    circle:   { sdf:(x,y)=>Math.hypot(x,y)-0.96,             cen:[0,0],
+                clip:'circle(48% at 50% 50%)',
+                rim:'M2,50 A48,48 0 1,1 98,50 A48,48 0 1,1 2,50 Z' },
+    triangle: { sdf:(x,y)=>polySDF(x,y,TRI,TRC),             cen:TRC,
+                clip:'polygon(50% 6%, 94% 90%, 6% 90%)',
+                rim:'M50,6 L94,90 L6,90 Z' },
+    rect:     { sdf:(x,y)=>roundRectSDF(x,y,0.92,0.64,0.18), cen:[0,0],
+                clip:'inset(18% 4% 18% 4% round 9%)',
+                rim:'M13,18 H87 A9,9 0 0 1 96,27 V73 A9,9 0 0 1 87,82 H13 A9,9 0 0 1 4,73 V27 A9,9 0 0 1 13,18 Z' },
+  };
+
+  // displacement map: gentle whole-disc magnification + a refractive glassy edge
+  const MAGN = 0.17, EDGEW = 0.26, EDGEMAG = 0.12;
+  function makeMap(N, sdf, cen){
+    const c = document.createElement('canvas'); c.width = c.height = N;
+    const x = c.getContext('2d'), img = x.createImageData(N,N), d = img.data, e = 1.7/N;
+    for(let py=0;py<N;py++) for(let px=0;px<N;px++){
+      const i=(py*N+px)*4, nx=((px+0.5)/N)*2-1, ny=((py+0.5)/N)*2-1, s=sdf(nx,ny);
+      let R=0.5, G=0.5;
+      if(s<0){
+        let rx=-(nx-cen[0])*MAGN, ry=-(ny-cen[1])*MAGN;                       // magnify inward
+        if(s>-EDGEW){ let t=(s+EDGEW)/EDGEW; t=t*t*(3-2*t);
+          const gx=sdf(nx+e,ny)-sdf(nx-e,ny), gy=sdf(nx,ny+e)-sdf(nx,ny-e), gl=Math.hypot(gx,gy)||1;
+          rx+=(gx/gl)*t*EDGEMAG; ry+=(gy/gl)*t*EDGEMAG;                       // refractive edge
+        }
+        R=0.5+rx; G=0.5+ry;
+      }
+      d[i]=Math.max(0,Math.min(255,R*255)); d[i+1]=Math.max(0,Math.min(255,G*255)); d[i+2]=128; d[i+3]=255;
+    }
+    x.putImageData(img,0,0); return c.toDataURL('image/png');
+  }
+
+  const DISP_K = 0.72, filters = new Map();
+  const svg = (t,a) => { const n=document.createElementNS(SVGNS,t); for(const k in a) n.setAttribute(k,a[k]); return n; };
+  function ensureFilter(shape, size){
+    const id = `g-${shape}-${size}`; if(filters.has(id)) return id;
+    const sp = SHAPES[shape], url = makeMap(220, sp.sdf, sp.cen), S = size*DISP_K, M = size*0.4;
+    const f = svg('filter',{ id, x:`${-M}`, y:`${-M}`, width:`${size+2*M}`, height:`${size+2*M}`,
+      filterUnits:'userSpaceOnUse', primitiveUnits:'userSpaceOnUse', 'color-interpolation-filters':'sRGB' });
+    f.appendChild(svg('feImage',{ href:url,'xlink:href':url, x:'0', y:'0', width:`${size}`, height:`${size}`, preserveAspectRatio:'none', result:'map' }));
+    f.appendChild(svg('feDisplacementMap',{ in:'SourceGraphic', in2:'map', scale:`${S}`, xChannelSelector:'R', yChannelSelector:'G', result:'d' }));
+    f.appendChild(svg('feGaussianBlur',{ in:'d', stdDeviation:'0.6' }));
+    defs.appendChild(f); filters.set(id,id); return id;
+  }
+
+  /* ============================================================
+     2. Apply shape + responsive size
+     ============================================================ */
+  let shape = 'circle', SIZE = 0, R = 0;
+  function apply(){
+    SIZE = Math.round(Math.max(150, Math.min(250, Math.min(innerWidth,innerHeight)*0.24))); R = SIZE/2;
+    lens.style.width = lens.style.height = SIZE+'px';
+    lens.style.setProperty('--glass', `url(#${ensureFilter(shape,SIZE)})`);
+    lens.style.clipPath = lens.style.webkitClipPath = SHAPES[shape].clip;
+    rimpath.setAttribute('d', SHAPES[shape].rim);
+  }
+  document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => {
+    shape = btn.dataset.shape;
+    document.querySelectorAll('.tab').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+    apply();
+  }));
+  addEventListener('resize', apply);
+  apply();
+
+  /* ============================================================
+     3. Follow the pointer — settle + integer-snap so an idle lens
+        stops updating (no backdrop-filter flicker)
+     ============================================================ */
+  let tx = innerWidth/2, ty = innerHeight/2, lx = tx, ly = ty, seen = false, px = -1, py = -1;
+  function point(e){
+    tx = e.clientX; ty = e.clientY;
+    if(!seen){ seen = true; lx = tx; ly = ty; lens.style.opacity = '1'; hint.style.opacity = '0'; }
+  }
+  addEventListener('pointermove', point, { passive:true });
+  addEventListener('pointerdown', point, { passive:true });
+
+  (function frame(){
+    if(Math.abs(tx-lx)<0.6 && Math.abs(ty-ly)<0.6){ lx=tx; ly=ty; }
+    else { lx += (tx-lx)*0.3; ly += (ty-ly)*0.3; }
+    const nx = Math.round(lx-R), ny = Math.round(ly-R);
+    if(nx!==px || ny!==py){ lens.style.transform = `translate3d(${nx}px,${ny}px,0)`; px=nx; py=ny; }
+    requestAnimationFrame(frame);
+  })();
+})();
+</script>
+</body>
+</html>
