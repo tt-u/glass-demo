@@ -10,19 +10,21 @@
 <style>
   :root{ --ink:#3a3357; }
   *{ box-sizing:border-box; }
-  html,body{ margin:0; }
+  html,body{ margin:0; overscroll-behavior:none; }   /* no pull-to-refresh / rubber-banding */
   body{
-    overflow-x:hidden;                            /* document scrolls vertically to pan the wallpaper */
+    overflow-x:hidden;
+    min-height:100vh; min-height:100dvh;
     background:#1a2230; color:var(--ink);
     font-family:"Space Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing:antialiased;
     user-select:none; -webkit-user-select:none;
     cursor:none;                                   /* the glass lens is the cursor */
-    touch-action:pan-y;
+    touch-action:none;                             /* drag moves the lens, not the page */
   }
 
-  /* full-width wallpaper — its natural height makes the page scrollable */
-  #bg{ display:block; width:100%; height:auto; position:relative; z-index:0; }
+  /* wallpaper — always fills at least one screen; taller than the viewport => scroll to pan */
+  #bg{ display:block; width:100%; height:auto; min-height:100vh; min-height:100dvh;
+    object-fit:cover; object-position:center; position:relative; z-index:0; }
   #vignette{ position:fixed; inset:0; z-index:1; pointer-events:none;
     background:radial-gradient(125% 105% at 50% 42%, transparent 58%, rgba(10,18,30,.28) 100%); }
 
